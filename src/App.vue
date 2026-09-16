@@ -1,13 +1,83 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import AssetPanel from '@/components/AssetPanel.vue'
 import CanvasArea from '@/components/CanvasArea.vue'
 import ConfigPanel from '@/components/ConfigPanel.vue'
 import { useEditorStore } from '@/stores/editor'
 import { useAssetsStore } from '@/stores/assets'
 import { DESIGN_HEIGHT, DESIGN_WIDTH } from '@/config/editor'
+import { parsePsdFile, PsdParseError, type PsdParseResult } from '@/utils/psd'
 
 const editorStore = useEditorStore()
 const assetsStore = useAssetsStore()
+
+/* ================= PSD 解析导入 ================= */
+
+const psdInputRef = ref<HTMLInputElement | null>(null)
+/** 是否正在解析 PSD（大文件解析耗时较久，按钮置为加载态） */
+const psdParsing = ref(false)
+/** 最近一次解析结果（用于下载 JSON / 展示统计） */
+const lastPsdResult = ref<PsdParseResult | null>(null)
+const psdStatus = ref('')
+const psdStatusError = ref(false)
+
+function pickPsd() {
+  if (psdParsing.value) return
+  psdInputRef.value?.click()
+}
+
+async function onPsdFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  // 允许连续选择同一个文件触发 change
+  input.value = ''
+  if (!file) return
+
+  psdParsing.value = true
+  psdStatus.value = `正在解析「${file.name}」…`
+  psdStatusError.value = false
+
+  try {
+    // 等两帧，保证按钮禁用态先渲染，避免大文件解析阻塞 UI
+    await new Promise((r) => requestAnimationFrame(() => r(null)))
+
+    const result = await parsePsdFile(file)
+    lastPsdResult.value = result
+    // 完整解析 JSON 打到控制台，便于调试与对接
+    console.log(`[PSD 解析] ${file.name}`, result)
+
+    const added = editorStore.importFromPsd(result)
+    if (added.length === 0) {
+      psdStatusError.value = true
+      psdStatus.value = `「${file.name}」未解析出可用图层（文字 ${result.meta.textCount} · 图片 ${result.meta.imageCount} · 跳过 ${result.meta.skippedCount}）`
+      window.alert(`未从「${file.name}」解析出可用图层。\n跳过原因：\n${result.meta.skippedReasons.slice(0, 10).join('\n') || '无'}`)
+    } else {
+      psdStatus.value =
+        `已导入「${file.name}」：文字 ${result.meta.textCount} 个 · 图片 ${result.meta.imageCount} 个` +
+        (result.meta.skippedCount ? ` · 跳过 ${result.meta.skippedCount} 层` : '')
+    }
+  } catch (err) {
+    psdStatusError.value = true
+    psdStatus.value = err instanceof PsdParseError ? err.message : `解析失败：${String(err)}`
+  } finally {
+    psdParsing.value = false
+  }
+}
+
+/** 下载最近一次解析生成的 JSON（文字与图片分开存放） */
+function downloadPsdJson() {
+  const result = lastPsdResult.value
+  if (!result) return
+  const blob = new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${result.meta.fileName.replace(/\.psd$/i, '')}.psd.json`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
 
 /** 一键载入示例：一张图片 + 一段标题文字 */
 function loadDemo() {
@@ -53,6 +123,30 @@ function clearCanvas() {
         <span class="brand__tech">Vue3 · TS · Pinia · Canvas</span>
       </div>
       <div class="topbar__actions">
+        <input
+          ref="psdInputRef"
+          type="file"
+          accept=".psd"
+          class="psd-input"
+          @change="onPsdFileChange"
+        />
+        <button class="btn sm primary" :disabled="psdParsing" @click="pickPsd">
+          {{ psdParsing ? '⏳ 解析中…' : '▣ 解析 PSD' }}
+        </button>
+        <button
+          v-if="lastPsdResult && !psdParsing"
+          class="btn sm"
+          title="下载最近一次 PSD 解析生成的 JSON（文字与图片分开存放）"
+          @click="downloadPsdJson"
+        >
+          ⤓ 下载 JSON
+        </button>
+        <span
+          v-if="psdStatus"
+          class="psd-status"
+          :class="{ 'psd-status--error': psdStatusError }"
+          :title="psdStatus"
+        >{{ psdStatus }}</span>
         <button class="btn sm" @click="loadDemo">✦ 载入示例</button>
         <button class="btn sm" @click="clearCanvas">清空画布</button>
       </div>
@@ -121,7 +215,28 @@ function clearCanvas() {
 
 .topbar__actions {
   display: flex;
+  align-items: center;
   gap: 8px;
+  min-width: 0;
+}
+
+/* 隐藏的 PSD 文件选择框 */
+.psd-input {
+  display: none;
+}
+
+/* PSD 解析状态提示 */
+.psd-status {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.psd-status--error {
+  color: var(--danger);
 }
 
 /* 三栏 */

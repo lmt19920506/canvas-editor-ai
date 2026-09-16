@@ -4,6 +4,7 @@ import { isTextElement } from '@/types/element'
 import { DESIGN_HEIGHT, DESIGN_WIDTH, clamp, MIN_ELEMENT_SIZE } from '@/config/editor'
 import { measureText } from '@/utils/measure'
 import { uid } from '@/utils/uid'
+import type { PsdParseResult } from '@/utils/psd'
 
 export const DEFAULT_FONT_FAMILY =
   'Arial, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif'
@@ -85,6 +86,64 @@ export const useEditorStore = defineStore('editor', {
       this.elements.push(el)
       this.selectedId = el.id
       return el
+    },
+
+    /**
+     * 导入 PSD 解析结果：
+     * 文字与图片按 order（自底向上）合并排序后依次 push，恢复 PSD 的图层 z-index；
+     * 文字按实际测量尺寸校正包围盒（PSD 文本框与渲染尺寸存在基线/内边距差异）
+     */
+    importFromPsd(result: PsdParseResult): EditorElement[] {
+      const ordered = [...result.texts, ...result.images].sort((a, b) => a.order - b.order)
+      const added: EditorElement[] = []
+
+      for (const item of ordered) {
+        if (item.type === 'text') {
+          const style = {
+            fontSize: item.fontSize,
+            fontWeight: item.fontWeight,
+            fontFamily: item.fontFamily,
+            lineHeight: item.lineHeight,
+          }
+          const m = measureText(item.content, style)
+          const el: TextElement = {
+            id: uid('txt'),
+            type: 'text',
+            name: item.name,
+            content: item.content,
+            color: item.color,
+            ...style,
+            x: clamp(item.x, 0, DESIGN_WIDTH - m.width),
+            y: clamp(item.y, 0, DESIGN_HEIGHT - m.height),
+            width: m.width,
+            height: m.height,
+            opacity: clamp(item.opacity, 0, 1),
+          }
+          added.push(el)
+        } else {
+          const w = Math.max(MIN_ELEMENT_SIZE, item.width)
+          const h = Math.max(MIN_ELEMENT_SIZE, item.height)
+          const el: ImageElement = {
+            id: uid('img'),
+            type: 'image',
+            name: item.name,
+            src: item.src,
+            aspectRatio: w / h,
+            x: clamp(item.x, 0, DESIGN_WIDTH - w),
+            y: clamp(item.y, 0, DESIGN_HEIGHT - h),
+            width: w,
+            height: h,
+            opacity: clamp(item.opacity, 0, 1),
+          }
+          added.push(el)
+        }
+      }
+
+      if (added.length) {
+        this.elements.push(...added)
+        this.selectedId = null
+      }
+      return added
     },
 
     /** 移动（拖拽/键盘/面板输入） */
