@@ -239,6 +239,29 @@ export function useCanvasEditor(
     return null
   }
 
+  /**
+   * 落点处的 frame 元素（穿透式命中）：
+   * 自顶向下查找第一个包含落点的 frame 类型元素。
+   * 与 elementAt 不同，上方重叠的 image（乃至 text）元素不会挡住它——
+   * 用于素材拖放：图片素材落在 frame 上时，即使 frame 被普通图片盖住，
+   * 也会穿透图片直接填充到 frame 的 SVG content image 里。
+   */
+  function frameAt(p: { x: number; y: number }): Extract<EditorElement, { type: 'frame' }> | null {
+    for (let i = editorStore.elements.length - 1; i >= 0; i--) {
+      const el = editorStore.elements[i]
+      if (!isFrameElement(el)) continue
+      if (
+        p.x >= el.x &&
+        p.x <= el.x + el.width &&
+        p.y >= el.y &&
+        p.y <= el.y + el.height
+      ) {
+        return el
+      }
+    }
+    return null
+  }
+
   function handleAt(el: EditorElement, p: { x: number; y: number }): ResizeHandle | null {
     const pad = HANDLE_SIZE / 2 + 6 // 命中半径略大于控制点视觉尺寸
     let best: ResizeHandle | null = null
@@ -451,9 +474,9 @@ export function useCanvasEditor(
     if (assetId) {
       const asset = assetsStore.byId(assetId)
       if (asset) {
-        // 落点命中 frame 元素 → 替换该元素的填充图（SVG 里的 content image）
-        const target = elementAt(p)
-        if (target && isFrameElement(target)) {
+        // 落点命中 frame 元素（穿透上方重叠的 image）→ 替换该元素的填充图
+        const target = frameAt(p)
+        if (target) {
           void getImageSize(asset.src)
             .then((size) => editorStore.replaceFrameImage(target.id, asset.src, size))
             .catch(() => editorStore.replaceFrameImage(target.id, asset.src))
@@ -468,9 +491,9 @@ export function useCanvasEditor(
     const file = files.find((f) => f.type.startsWith('image/'))
     if (file) {
       void fileToDataURL(file).then(async (src) => {
-        // 落点命中 frame 元素 → 替换该元素的填充图
-        const target = elementAt(p)
-        if (target && isFrameElement(target)) {
+        // 落点命中 frame 元素（穿透上方重叠的 image）→ 替换该元素的填充图
+        const target = frameAt(p)
+        if (target) {
           const size = await getImageSize(src).catch(() => undefined)
           editorStore.replaceFrameImage(target.id, src, size)
           return
