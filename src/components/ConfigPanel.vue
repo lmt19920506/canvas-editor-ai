@@ -3,14 +3,14 @@ import { computed } from 'vue'
 import { useEditorStore } from '@/stores/editor'
 import { DEFAULT_FONT_FAMILY } from '@/stores/editor'
 import type { ElementPatch } from '@/types/element'
-import type { ImageElement, TextElement } from '@/types/element'
+import type { FrameElement, ImageElement, TextElement } from '@/types/element'
 
 const store = useEditorStore()
 const sel = computed(() => store.selected)
 
-/** 收窄后的图片/文字元素，模板里用 v-if="img"/"txt" 做类型收窄 */
-const img = computed<ImageElement | null>(() =>
-  sel.value?.type === 'image' ? sel.value : null,
+/** 收窄后的图片/填充(frame)/文字元素，模板里用 v-if="img"/"txt" 做类型收窄 */
+const img = computed<ImageElement | FrameElement | null>(() =>
+  sel.value?.type === 'image' || sel.value?.type === 'frame' ? sel.value : null,
 )
 const txt = computed<TextElement | null>(() =>
   sel.value?.type === 'text' ? sel.value : null,
@@ -75,7 +75,7 @@ function setOpacity(raw: string) {
     <div class="panel-head">
       <span>属性配置</span>
       <span v-if="img || txt" class="type-badge" :class="img ? 'img' : 'txt'">
-        {{ img ? '图片' : '文字' }}
+        {{ img ? (img.type === 'frame' ? '填充元素' : '图片') : '文字' }}
       </span>
     </div>
 

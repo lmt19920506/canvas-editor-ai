@@ -1,14 +1,12 @@
 import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 import {
-  DESIGN_HEIGHT,
-  DESIGN_WIDTH,
   HANDLE_SIZE,
   MIN_ELEMENT_SIZE,
   clamp,
   type ResizeHandle,
 } from '@/config/editor'
 import type { EditorElement, TextElement } from '@/types/element'
-import { isImageElement, isTextElement } from '@/types/element'
+import { isFrameElement, isImageElement, isTextElement } from '@/types/element'
 import { measureText, fontShorthand } from '@/utils/measure'
 import { loadImage, fileToDataURL, getImageSize } from '@/utils/image'
 import { useEditorStore } from '@/stores/editor'
@@ -87,21 +85,24 @@ export function useCanvasEditor(
     const ctx = getCtx()
     if (!canvas || !ctx) return
 
-    ctx.clearRect(0, 0, DESIGN_WIDTH, DESIGN_HEIGHT)
+    const cw = editorStore.canvasWidth
+    const ch = editorStore.canvasHeight
+
+    ctx.clearRect(0, 0, cw, ch)
 
     // 背景（棋盘纹理示意透明底）
     ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, DESIGN_WIDTH, DESIGN_HEIGHT)
+    ctx.fillRect(0, 0, cw, ch)
     ctx.strokeStyle = '#f0f1f3'
     ctx.lineWidth = 1
     ctx.beginPath()
-    for (let x = 0.5; x <= DESIGN_WIDTH; x += 20) {
+    for (let x = 0.5; x <= cw; x += 20) {
       ctx.moveTo(x, 0)
-      ctx.lineTo(x, DESIGN_HEIGHT)
+      ctx.lineTo(x, ch)
     }
-    for (let y = 0.5; y <= DESIGN_HEIGHT; y += 20) {
+    for (let y = 0.5; y <= ch; y += 20) {
       ctx.moveTo(0, y)
-      ctx.lineTo(DESIGN_WIDTH, y)
+      ctx.lineTo(cw, y)
     }
     ctx.stroke()
 
@@ -119,7 +120,7 @@ export function useCanvasEditor(
     ctx.save()
     ctx.globalAlpha = el.opacity
 
-    if (isImageElement(el)) {
+    if (isImageElement(el) || isFrameElement(el)) {
       drawImageElement(ctx, el)
     } else if (isTextElement(el)) {
       drawTextElement(ctx, el)
@@ -128,7 +129,10 @@ export function useCanvasEditor(
     ctx.restore()
   }
 
-  function drawImageElement(ctx: CanvasRenderingContext2D, el: Extract<EditorElement, { type: 'image' }>) {
+  function drawImageElement(
+    ctx: CanvasRenderingContext2D,
+    el: Extract<EditorElement, { type: 'image' | 'frame' }>,
+  ) {
     const cached = imageCache.get(el.src)
     if (cached) {
       ctx.drawImage(cached, el.x, el.y, el.width, el.height)
@@ -212,9 +216,11 @@ export function useCanvasEditor(
   function toDesignPoint(e: { clientX: number; clientY: number }) {
     const canvas = canvasRef.value
     if (!canvas) return { x: 0, y: 0 }
+    const cw = editorStore.canvasWidth
+    const ch = editorStore.canvasHeight
     const rect = canvas.getBoundingClientRect()
-    const x = clamp(((e.clientX - rect.left) / rect.width) * DESIGN_WIDTH, 0, DESIGN_WIDTH)
-    const y = clamp(((e.clientY - rect.top) / rect.height) * DESIGN_HEIGHT, 0, DESIGN_HEIGHT)
+    const x = clamp(((e.clientX - rect.left) / rect.width) * cw, 0, cw)
+    const y = clamp(((e.clientY - rect.top) / rect.height) * ch, 0, ch)
     return { x, y }
   }
 
@@ -297,7 +303,7 @@ export function useCanvasEditor(
 
     // 最小/最大限制
     const minF = MIN_ELEMENT_SIZE / Math.max(ow, oh)
-    const maxF = Math.min(DESIGN_WIDTH / ow, DESIGN_HEIGHT / oh)
+    const maxF = Math.min(editorStore.canvasWidth / ow, editorStore.canvasHeight / oh)
     f = clamp(f, minF, maxF)
 
     const width = ow * f
@@ -306,8 +312,8 @@ export function useCanvasEditor(
     let y = oy
     if (west) x = ox + ow - width
     if (north) y = oy + oh - height
-    x = clamp(x, 0, DESIGN_WIDTH - width)
-    y = clamp(y, 0, DESIGN_HEIGHT - height)
+    x = clamp(x, 0, editorStore.canvasWidth - width)
+    y = clamp(y, 0, editorStore.canvasHeight - height)
     return { x, y, width, height, scale: f }
   }
 
@@ -440,11 +446,19 @@ export function useCanvasEditor(
     dragOver.value = false
     const p = toDesignPoint(e)
 
-    // 1) 内部素材
+    // 1) 内部素材（asset-item 拖拽）
     const assetId = e.dataTransfer?.getData(DRAG_MIME) ?? ''
     if (assetId) {
       const asset = assetsStore.byId(assetId)
       if (asset) {
+        // 落点命中 frame 元素 → 替换该元素的填充图（SVG 里的 content image）
+        const target = elementAt(p)
+        if (target && isFrameElement(target)) {
+          void getImageSize(asset.src)
+            .then((size) => editorStore.replaceFrameImage(target.id, asset.src, size))
+            .catch(() => editorStore.replaceFrameImage(target.id, asset.src))
+          return
+        }
         void addImageFromAsset(asset, p)
         return
       }
@@ -454,6 +468,13 @@ export function useCanvasEditor(
     const file = files.find((f) => f.type.startsWith('image/'))
     if (file) {
       void fileToDataURL(file).then(async (src) => {
+        // 落点命中 frame 元素 → 替换该元素的填充图
+        const target = elementAt(p)
+        if (target && isFrameElement(target)) {
+          const size = await getImageSize(src).catch(() => undefined)
+          editorStore.replaceFrameImage(target.id, src, size)
+          return
+        }
         const size = await getImageSize(src)
         editorStore.addImage(
           { name: file.name, src, width: size.width, height: size.height },
@@ -531,6 +552,11 @@ export function useCanvasEditor(
     )
     watch(
       () => editorStore.selectedId,
+      () => invalidate(),
+    )
+    // 画布尺寸变化（PSD 导入）后重绘
+    watch(
+      () => [editorStore.canvasWidth, editorStore.canvasHeight],
       () => invalidate(),
     )
 

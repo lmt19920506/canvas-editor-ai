@@ -5,7 +5,6 @@ import CanvasArea from '@/components/CanvasArea.vue'
 import ConfigPanel from '@/components/ConfigPanel.vue'
 import { useEditorStore } from '@/stores/editor'
 import { useAssetsStore } from '@/stores/assets'
-import { DESIGN_HEIGHT, DESIGN_WIDTH } from '@/config/editor'
 import { parsePsdFile, PsdParseError, type PsdParseResult } from '@/utils/psd'
 
 const editorStore = useEditorStore()
@@ -43,18 +42,21 @@ async function onPsdFileChange(e: Event) {
 
     const result = await parsePsdFile(file)
     lastPsdResult.value = result
-    // 完整解析 JSON 打到控制台，便于调试与对接
-    console.log(`[PSD 解析] ${file.name}`, result)
+    // 完整解析 JSON（page 数组结构）打到控制台，便于调试与对接
+    console.log(`[PSD 解析] ${file.name}`, result.pages)
 
     const added = editorStore.importFromPsd(result)
+    const { textCount, imageCount, frameCount, hasContainerUrl } = result.meta
     if (added.length === 0) {
       psdStatusError.value = true
-      psdStatus.value = `「${file.name}」未解析出可用图层（文字 ${result.meta.textCount} · 图片 ${result.meta.imageCount} · 跳过 ${result.meta.skippedCount}）`
+      psdStatus.value = `「${file.name}」未解析出可用图层（文字 ${textCount} · 图片 ${imageCount} · 填充 ${frameCount} · 跳过 ${result.meta.skippedCount}）`
       window.alert(`未从「${file.name}」解析出可用图层。\n跳过原因：\n${result.meta.skippedReasons.slice(0, 10).join('\n') || '无'}`)
     } else {
       psdStatus.value =
-        `已导入「${file.name}」：文字 ${result.meta.textCount} 个 · 图片 ${result.meta.imageCount} 个` +
-        (result.meta.skippedCount ? ` · 跳过 ${result.meta.skippedCount} 层` : '')
+        `已导入「${file.name}」：文字 ${textCount} · 图片 ${imageCount} · 填充元素 ${frameCount}` +
+        (hasContainerUrl ? ' · 已设置画布背景' : '') +
+        (result.meta.skippedCount ? ` · 跳过 ${result.meta.skippedCount} 层` : '') +
+        `（画布 ${result.meta.psdWidth} × ${result.meta.psdHeight}）`
     }
   } catch (err) {
     psdStatusError.value = true
@@ -64,11 +66,11 @@ async function onPsdFileChange(e: Event) {
   }
 }
 
-/** 下载最近一次解析生成的 JSON（文字与图片分开存放） */
+/** 下载最近一次解析生成的 JSON（page 数组结构：container + data[文字/图片/填充元素]） */
 function downloadPsdJson() {
   const result = lastPsdResult.value
   if (!result) return
-  const blob = new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' })
+  const blob = new Blob([JSON.stringify(result.pages, null, 2)], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -85,8 +87,8 @@ function loadDemo() {
   if (first) {
     editorStore.addImage(
       { name: first.name, src: first.src, width: first.width, height: first.height },
-      DESIGN_WIDTH * 0.32,
-      DESIGN_HEIGHT * 0.48,
+      editorStore.canvasWidth * 0.32,
+      editorStore.canvasHeight * 0.48,
     )
   }
   editorStore.addText({
@@ -136,7 +138,7 @@ function clearCanvas() {
         <button
           v-if="lastPsdResult && !psdParsing"
           class="btn sm"
-          title="下载最近一次 PSD 解析生成的 JSON（文字与图片分开存放）"
+          title="下载最近一次 PSD 解析生成的 JSON（page 数组：container 背景 + data 元素）"
           @click="downloadPsdJson"
         >
           ⤓ 下载 JSON

@@ -2,7 +2,6 @@
 import { computed, ref } from 'vue'
 import { useAssetsStore, type AssetItem } from '@/stores/assets'
 import { useEditorStore } from '@/stores/editor'
-import { DESIGN_HEIGHT, DESIGN_WIDTH } from '@/config/editor'
 import { fileToDataURL, getImageSize } from '@/utils/image'
 
 const DRAG_MIME = 'application/x-canvas-editor-asset'
@@ -67,8 +66,8 @@ async function addAssetToCenter(item: AssetItem) {
   }
   editorStore.addImage(
     { name: item.name, src: item.src, width, height },
-    DESIGN_WIDTH / 2,
-    DESIGN_HEIGHT / 2,
+    editorStore.canvasWidth / 2,
+    editorStore.canvasHeight / 2,
   )
 }
 

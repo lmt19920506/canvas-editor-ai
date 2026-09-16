@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useEditorStore } from '@/stores/editor'
-import { DESIGN_HEIGHT, DESIGN_WIDTH } from '@/config/editor'
 import { useCanvasEditor } from '@/composables/useCanvasEditor'
 
 const editorStore = useEditorStore()
@@ -15,11 +14,13 @@ const { dragOver } = useCanvasEditor(canvasRef, wrapRef)
 <template>
   <div ref="wrapRef" class="canvas-page">
     <div class="canvas-stage">
+      <!-- 画布始终居中；宽高为动态设计尺寸（PSD 导入后 = PSD 尺寸），
+           超出 canvas-stage 时由 max-width/max-height 等比缩放 -->
       <canvas
         ref="canvasRef"
         class="editor-canvas"
-        :width="DESIGN_WIDTH"
-        :height="DESIGN_HEIGHT"
+        :width="editorStore.canvasWidth"
+        :height="editorStore.canvasHeight"
       />
 
       <!-- 拖拽素材悬停提示 -->
@@ -45,7 +46,7 @@ const { dragOver } = useCanvasEditor(canvasRef, wrapRef)
     </div>
 
     <div class="canvas-status">
-      <span>设计尺寸 {{ DESIGN_WIDTH }} × {{ DESIGN_HEIGHT }}</span>
+      <span>设计尺寸 {{ editorStore.canvasWidth }} × {{ editorStore.canvasHeight }}</span>
       <i class="dot" />
       <span>选中后拖动 8 个控制点可<em>等比缩放</em></span>
       <i class="dot" />
