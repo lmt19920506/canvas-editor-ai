@@ -37,7 +37,17 @@ interface ResizeDrag {
   font: number
 }
 
-type DragState = MoveDrag | ResizeDrag
+/** frame 编辑模式：拖动平移填充图（mask 内内容图） */
+interface PanFrameDrag {
+  kind: 'pan-frame'
+  id: string
+  startX: number
+  startY: number
+  oLeft: number
+  oTop: number
+}
+
+type DragState = MoveDrag | ResizeDrag | PanFrameDrag
 
 export interface HandlePoint {
   key: ResizeHandle
@@ -324,7 +334,27 @@ export function useCanvasEditor(
 
     const el = elementAt(p)
     if (el) {
+      // 点击其他元素时退出 frame 编辑模式（编辑中的 frame 自身可继续交互）
+      if (editorStore.editingFrameId && editorStore.editingFrameId !== el.id) {
+        editorStore.stopEditFrame()
+      }
       if (editorStore.selectedId !== el.id) editorStore.select(el.id)
+
+      // 编辑模式：拖动 = 平移 mask 内的填充图（不是移动元素）
+      if (isFrameElement(el) && editorStore.editingFrameId === el.id) {
+        drag = {
+          kind: 'pan-frame',
+          id: el.id,
+          startX: p.x,
+          startY: p.y,
+          oLeft: el.imgContentLeft,
+          oTop: el.imgContentTop,
+        }
+        canvas.setPointerCapture(e.pointerId)
+        applyCursor('move')
+        return
+      }
+
       drag = {
         kind: 'move',
         id: el.id,
@@ -338,8 +368,9 @@ export function useCanvasEditor(
       return
     }
 
-    // 点击空白：取消选中
+    // 点击空白：取消选中，并退出 frame 编辑模式
     editorStore.select(null)
+    editorStore.stopEditFrame()
   }
 
   function onPointerMove(e: PointerEvent) {
@@ -357,6 +388,17 @@ export function useCanvasEditor(
       } else {
         applyCursor('default')
       }
+      return
+    }
+
+    if (drag.kind === 'pan-frame') {
+      // 编辑模式：平移填充图（钳制由 store 内处理，保证不露底）
+      editorStore.moveFrameImage(
+        drag.id,
+        drag.oLeft + (p.x - drag.startX),
+        drag.oTop + (p.y - drag.startY),
+      )
+      applyCursor('move')
       return
     }
 
@@ -390,6 +432,29 @@ export function useCanvasEditor(
   }
 
   /* ================= 素材拖放 ================= */
+
+  /** 双击：frame 元素进入/退出编辑模式（编辑模式下滚轮缩放填充图） */
+  function onDblClick(e: MouseEvent) {
+    const p = toDesignPoint(e)
+    const el = elementAt(p)
+    if (el && isFrameElement(el)) {
+      if (editorStore.editingFrameId === el.id) {
+        editorStore.stopEditFrame()
+      } else {
+        editorStore.startEditFrame(el.id)
+      }
+    } else {
+      editorStore.stopEditFrame()
+    }
+  }
+
+  /** 编辑模式下滚轮缩放 frame 填充图（上滚放大 / 下滚缩小） */
+  function onWheel(e: WheelEvent) {
+    if (!editorStore.editingFrameId) return
+    e.preventDefault()
+    const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1
+    editorStore.scaleFrameImage(editorStore.editingFrameId, factor)
+  }
 
   function hasDnD(e: DragEvent): boolean {
     const types = e.dataTransfer?.types ?? []
@@ -491,6 +556,7 @@ export function useCanvasEditor(
     }
     if (e.key === 'Escape') {
       editorStore.select(null)
+      editorStore.stopEditFrame()
       return
     }
 
@@ -539,6 +605,8 @@ export function useCanvasEditor(
     canvas.addEventListener('pointermove', onPointerMove)
     canvas.addEventListener('pointerup', onPointerUp)
     canvas.addEventListener('pointercancel', onPointerUp)
+    canvas.addEventListener('dblclick', onDblClick)
+    canvas.addEventListener('wheel', onWheel, { passive: false })
 
     wrap.addEventListener('dragenter', onDragEnter)
     wrap.addEventListener('dragover', onDragOver)
@@ -556,6 +624,8 @@ export function useCanvasEditor(
       canvas.removeEventListener('pointermove', onPointerMove)
       canvas.removeEventListener('pointerup', onPointerUp)
       canvas.removeEventListener('pointercancel', onPointerUp)
+      canvas.removeEventListener('dblclick', onDblClick)
+      canvas.removeEventListener('wheel', onWheel)
     }
     if (wrap) {
       wrap.removeEventListener('dragenter', onDragEnter)

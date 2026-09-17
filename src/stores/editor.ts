@@ -42,6 +42,8 @@ export const useEditorStore = defineStore('editor', {
     /** 画布尺寸（默认设计尺寸；PSD 导入后切换为 PSD 原始尺寸） */
     canvasWidth: DESIGN_WIDTH,
     canvasHeight: DESIGN_HEIGHT,
+    /** 双击进入编辑模式的 frame 元素 id（编辑模式下滚轮缩放其填充图） */
+    editingFrameId: null as string | null,
   }),
 
   getters: {
@@ -176,7 +178,7 @@ export const useEditorStore = defineStore('editor', {
           }
           added.push(el)
         } else if (item.type === 'frame') {
-          // 可填充元素：由 config 构建渲染 SVG（结构同徕珂印 frame 组件），填充图/遮罩图保留
+          // 可填充元素：渲染参数写入元素字段，SVG 由组件模板直接渲染（结构同徕珂印 frame 组件）
           const w = Math.max(MIN_ELEMENT_SIZE, item.width)
           const h = Math.max(MIN_ELEMENT_SIZE, item.height)
           const { svg, mask } = buildFrameSvg(item)
@@ -190,6 +192,13 @@ export const useEditorStore = defineStore('editor', {
             maskImageUrl: item.config.maskImageUrl,
             image: item.config.contentImageUrl,
             aspectRatio: w / h,
+            viewBoxWidth: item.config.viewBoxWidth,
+            viewBoxHeight: item.config.viewBoxHeight,
+            imgContentLeft: item.config.imgContentLeft,
+            imgContentTop: item.config.imgContentTop,
+            imgContentWidth: item.config.imgContentWidth,
+            imgContentHeight: item.config.imgContentHeight,
+            imgScale: 1,
             x: clamp(item.x, 0, this.canvasWidth - w),
             y: clamp(item.y, 0, this.canvasHeight - h),
             width: w,
@@ -264,10 +273,73 @@ export const useEditorStore = defineStore('editor', {
       })
 
       el.image = url
+      // 模板渲染参数（组件直接渲染 SVG，无需重建字符串）
+      el.viewBoxWidth = vw
+      el.viewBoxHeight = vh
+      el.imgContentLeft = icLeft
+      el.imgContentTop = icTop
+      el.imgContentWidth = icw
+      el.imgContentHeight = ich
+      el.imgScale = 1
+      // 兼容保留：src/svg/mask 同步更新
       el.svg = svg
       el.mask = mask
       el.src = svgToDataURL(svg)
       this.selectedId = el.id
+      return true
+    },
+
+    /** 双击 frame 元素进入编辑模式（滚轮缩放填充图） */
+    startEditFrame(id: string): boolean {
+      const el = this.elements.find((e) => e.id === id)
+      if (!el || !isFrameElement(el)) return false
+      this.editingFrameId = id
+      this.selectedId = id
+      return true
+    },
+
+    /** 退出 frame 编辑模式 */
+    stopEditFrame() {
+      this.editingFrameId = null
+    },
+
+    /**
+     * 编辑模式下缩放 frame 填充图（以当前内容中心为锚点）。
+     * 缩放后钳制平移，保证内容始终完整覆盖遮罩区域（不露底）。
+     */
+    scaleFrameImage(id: string, factor: number): boolean {
+      const el = this.elements.find((e) => e.id === id)
+      if (!el || !isFrameElement(el)) return false
+
+      const vw = el.viewBoxWidth
+      const vh = el.viewBoxHeight
+      // 下限：缩放后仍盖满 viewBox；上限 10 倍
+      const minFactor = Math.max(vw / el.imgContentWidth, vh / el.imgContentHeight)
+      const f = clamp(factor, Math.min(minFactor, 10), 10)
+
+      const cx = el.imgContentLeft + el.imgContentWidth / 2
+      const cy = el.imgContentTop + el.imgContentHeight / 2
+      const nw = Math.round(el.imgContentWidth * f)
+      const nh = Math.round(el.imgContentHeight * f)
+      let nx = Math.round(cx - nw / 2)
+      let ny = Math.round(cy - nh / 2)
+      nx = clamp(nx, vw - nw, 0)
+      ny = clamp(ny, vh - nh, 0)
+
+      el.imgContentLeft = nx
+      el.imgContentTop = ny
+      el.imgContentWidth = nw
+      el.imgContentHeight = nh
+      el.imgScale = clamp(el.imgScale * f, 1, 10)
+      return true
+    },
+
+    /** 编辑模式下拖动调整填充图位置（钳制平移，保证内容始终盖满遮罩区域） */
+    moveFrameImage(id: string, left: number, top: number): boolean {
+      const el = this.elements.find((e) => e.id === id)
+      if (!el || !isFrameElement(el)) return false
+      el.imgContentLeft = clamp(Math.round(left), el.viewBoxWidth - el.imgContentWidth, 0)
+      el.imgContentTop = clamp(Math.round(top), el.viewBoxHeight - el.imgContentHeight, 0)
       return true
     },
 
@@ -361,6 +433,7 @@ export const useEditorStore = defineStore('editor', {
     clearAll() {
       this.elements = []
       this.selectedId = null
+      this.editingFrameId = null
       // 清空后恢复默认设计尺寸
       this.canvasWidth = DESIGN_WIDTH
       this.canvasHeight = DESIGN_HEIGHT

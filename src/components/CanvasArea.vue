@@ -85,7 +85,11 @@ onBeforeUnmount(() => {
           >
             <template v-for="el in editorStore.elements" :key="el.id">
               <ElementImageView v-if="el.type === 'image'" :el="el" />
-              <ElementFrameView v-else-if="el.type === 'frame'" :el="el" />
+              <ElementFrameView
+                v-else-if="el.type === 'frame'"
+                :el="el"
+                :editing="editorStore.editingFrameId === el.id"
+              />
               <ElementTextView v-else-if="el.type === 'text'" :el="el" />
             </template>
           </div>
