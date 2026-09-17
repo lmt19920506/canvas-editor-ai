@@ -3,7 +3,12 @@ import { MIN_ELEMENT_SIZE, clamp, type ResizeHandle } from '@/config/editor'
 import type { EditorElement } from '@/types/element'
 import { isFrameElement, isTextElement } from '@/types/element'
 import { fileToDataURL, getImageSize } from '@/utils/image'
-import { HANDLE_CURSOR, handleHitRadius, handlePoints } from '@/utils/selection'
+import {
+  HANDLE_CURSOR,
+  handleHitRadius,
+  handlePoints,
+  handleSizeInDesign,
+} from '@/utils/selection'
 import { useEditorStore } from '@/stores/editor'
 import { useAssetsStore, type AssetItem } from '@/stores/assets'
 
@@ -117,6 +122,20 @@ export function useCanvasEditor(
     return { x, y }
   }
 
+  /**
+   * 画布当前显示缩放比（屏幕像素 / 设计坐标像素）。
+   * 逻辑：底 canvas 的 DOM 宽度 ÷ 设计宽度，与 toDesignPoint 的换算同源，因此天然一致。
+   * 用途：把「屏幕恒定尺寸」换算回设计坐标 —— 控制点 18px、命中半径、线宽等都需要它。
+   *       容器尚未布局完成（宽度为 0）时回退为 1，避免出现 NaN / 除零。
+   */
+  function displayScale(): number {
+    const canvas = bgCanvasRef.value
+    if (!canvas) return 1
+    const rect = canvas.getBoundingClientRect()
+    if (!rect.width || !editorStore.canvasWidth) return 1
+    return rect.width / editorStore.canvasWidth
+  }
+
   function elementAt(p: { x: number; y: number }): EditorElement | null {
     for (let i = editorStore.elements.length - 1; i >= 0; i--) {
       const el = editorStore.elements[i]
@@ -155,11 +174,19 @@ export function useCanvasEditor(
     return null
   }
 
+  /**
+   * 落点命中的控制点（8 个中的一个）。
+   * 逻辑：控制点在屏幕上恒定 18px，所以命中半径必须按当前显示缩放换算回设计坐标：
+   *       size = 18 / displayScale，pad = size × 1.25（与 SelectionOverlay 用同一换算）。
+   *       控制点中心取自 handlePoints（= 选中框角/边中点），渲染与命中同源，
+   *       因此画布缩小时「看到的控制点」和「能点到的区域」始终重合，手感不随缩放变化。
+   */
   function handleAt(el: EditorElement, p: { x: number; y: number }): ResizeHandle | null {
-    const pad = handleHitRadius() // 命中半径略大于控制点视觉尺寸
+    const size = handleSizeInDesign(displayScale()) // 控制点的设计坐标边长
+    const pad = handleHitRadius(size) // 命中半径略大于控制点视觉尺寸
     let best: ResizeHandle | null = null
     let bestDist = Infinity
-    for (const hp of handlePoints(el)) {
+    for (const hp of handlePoints(el, size)) {
       const d = Math.hypot(p.x - hp.x, p.y - hp.y)
       if (d <= pad && d < bestDist) {
         bestDist = d

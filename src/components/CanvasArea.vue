@@ -147,10 +147,11 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- 选中框层：独立组件渲染虚线框 + 8 个控制点，位于所有元素之上；
-             不设 overflow:hidden，画布边缘元素的控制点才能完整可见 -->
+             不设 overflow:hidden，画布边缘元素的控制点才能完整可见。
+             传入 scale 供组件做「屏幕恒定尺寸」的反向换算（控制点恒定 18px） -->
         <div class="selection-layer">
           <div class="element-layer__inner" :style="innerStyle">
-            <SelectionOverlay :el="editorStore.selected" />
+            <SelectionOverlay :el="editorStore.selected" :scale="scale" />
           </div>
         </div>
       </div>
