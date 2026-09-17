@@ -5,10 +5,9 @@ import {
   clamp,
   type ResizeHandle,
 } from '@/config/editor'
-import type { EditorElement, TextElement } from '@/types/element'
-import { isFrameElement, isImageElement, isTextElement } from '@/types/element'
-import { measureText, fontShorthand } from '@/utils/measure'
-import { loadImage, fileToDataURL, getImageSize } from '@/utils/image'
+import type { EditorElement } from '@/types/element'
+import { isFrameElement, isTextElement } from '@/types/element'
+import { fileToDataURL, getImageSize } from '@/utils/image'
 import { useEditorStore } from '@/stores/editor'
 import { useAssetsStore, type AssetItem } from '@/stores/assets'
 
@@ -48,11 +47,15 @@ export interface HandlePoint {
 
 /**
  * 画布编辑器核心 hook
- * 职责：canvas 渲染 / 点击选中 / 拖拽移动 / 8 控制点等比缩放 / 素材拖放接收 / 键盘操作
+ * 职责：canvas 渲染（底图网格 + 顶层选中框）/ 点击选中 / 拖拽移动 / 8 控制点等比缩放 /
+ *       素材拖放接收 / 键盘操作。
+ * 元素（image / frame / text）不再由 canvas 绘制，改由 Vue 组件渲染在两层 canvas 之间
+ * （见 CanvasArea.vue 与 components/elements/*），本 hook 只负责底图与选中态。
  */
 export function useCanvasEditor(
-  canvasRef: Ref<HTMLCanvasElement | null>,
   wrapRef: Ref<HTMLElement | null>,
+  bgCanvasRef: Ref<HTMLCanvasElement | null>,
+  overlayCanvasRef: Ref<HTMLCanvasElement | null>,
 ) {
   const editorStore = useEditorStore()
   const assetsStore = useAssetsStore()
@@ -60,7 +63,6 @@ export function useCanvasEditor(
   /** 是否正拖拽素材悬停在画布区域（控制高亮遮罩） */
   const dragOver = ref(false)
 
-  const imageCache = new Map<string, HTMLImageElement>()
   let drag: DragState | null = null
   let rafId = 0
   let lastCursor = ''
@@ -68,8 +70,12 @@ export function useCanvasEditor(
 
   /* ================= 渲染 ================= */
 
-  function getCtx(): CanvasRenderingContext2D | null {
-    return canvasRef.value?.getContext('2d') ?? null
+  function getBgCtx(): CanvasRenderingContext2D | null {
+    return bgCanvasRef.value?.getContext('2d') ?? null
+  }
+
+  function getOverlayCtx(): CanvasRenderingContext2D | null {
+    return overlayCanvasRef.value?.getContext('2d') ?? null
   }
 
   function invalidate() {
@@ -81,92 +87,38 @@ export function useCanvasEditor(
   }
 
   function render() {
-    const canvas = canvasRef.value
-    const ctx = getCtx()
-    if (!canvas || !ctx) return
+    const bg = bgCanvasRef.value
+    const bgCtx = bg?.getContext('2d') ?? null
+    const overlay = overlayCanvasRef.value
+    const overlayCtx = overlay?.getContext('2d') ?? null
+    if (!bg || !bgCtx || !overlay || !overlayCtx) return
 
     const cw = editorStore.canvasWidth
     const ch = editorStore.canvasHeight
 
-    ctx.clearRect(0, 0, cw, ch)
-
-    // 背景（棋盘纹理示意透明底）
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, cw, ch)
-    ctx.strokeStyle = '#f0f1f3'
-    ctx.lineWidth = 1
-    ctx.beginPath()
+    // 底层画布：白底 + 网格（示意透明底）
+    bgCtx.clearRect(0, 0, cw, ch)
+    bgCtx.fillStyle = '#ffffff'
+    bgCtx.fillRect(0, 0, cw, ch)
+    bgCtx.strokeStyle = '#f0f1f3'
+    bgCtx.lineWidth = 1
+    bgCtx.beginPath()
     for (let x = 0.5; x <= cw; x += 20) {
-      ctx.moveTo(x, 0)
-      ctx.lineTo(x, ch)
+      bgCtx.moveTo(x, 0)
+      bgCtx.lineTo(x, ch)
     }
     for (let y = 0.5; y <= ch; y += 20) {
-      ctx.moveTo(0, y)
-      ctx.lineTo(cw, y)
+      bgCtx.moveTo(0, y)
+      bgCtx.lineTo(cw, y)
     }
-    ctx.stroke()
+    bgCtx.stroke()
 
-    for (const el of editorStore.elements) {
-      drawElement(ctx, el)
-    }
-
+    // 顶层画布：仅绘制选中虚线框与控制点（元素由 Vue 组件渲染在两层画布之间）
+    overlayCtx.clearRect(0, 0, cw, ch)
     const sel = editorStore.selected
     if (sel && editorStore.elements.includes(sel)) {
-      drawSelection(ctx, sel)
+      drawSelection(overlayCtx, sel)
     }
-  }
-
-  function drawElement(ctx: CanvasRenderingContext2D, el: EditorElement) {
-    ctx.save()
-    ctx.globalAlpha = el.opacity
-
-    if (isImageElement(el) || isFrameElement(el)) {
-      drawImageElement(ctx, el)
-    } else if (isTextElement(el)) {
-      drawTextElement(ctx, el)
-    }
-
-    ctx.restore()
-  }
-
-  function drawImageElement(
-    ctx: CanvasRenderingContext2D,
-    el: Extract<EditorElement, { type: 'image' | 'frame' }>,
-  ) {
-    const cached = imageCache.get(el.src)
-    if (cached) {
-      ctx.drawImage(cached, el.x, el.y, el.width, el.height)
-      return
-    }
-    // 占位并异步加载
-    ctx.fillStyle = '#dfe3ea'
-    ctx.fillRect(el.x, el.y, el.width, el.height)
-    ctx.fillStyle = '#86909c'
-    ctx.font = '12px sans-serif'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.fillText('加载中…', el.x + el.width / 2, el.y + el.height / 2)
-    loadImage(el.src)
-      .then((img) => {
-        imageCache.set(el.src, img)
-        invalidate()
-      })
-      .catch(() => {
-        /* 忽略坏图 */
-      })
-  }
-
-  function drawTextElement(ctx: CanvasRenderingContext2D, el: TextElement) {
-    const m = measureText(el.content, el)
-    ctx.font = fontShorthand(el)
-    ctx.fillStyle = el.color
-    ctx.textAlign = 'left'
-    ctx.textBaseline = 'middle'
-    // 将文本块垂直居中于存储的 box，兼容缩放后的微差
-    const top = el.y + (el.height - m.height) / 2
-    m.lines.forEach((line, i) => {
-      ctx.fillText(line, el.x, top + i * m.lineHeight + m.lineHeight / 2)
-    })
   }
 
   /** 当前选中元素 8 个控制点 */
@@ -214,7 +166,7 @@ export function useCanvasEditor(
   /* ================= 坐标与命中 ================= */
 
   function toDesignPoint(e: { clientX: number; clientY: number }) {
-    const canvas = canvasRef.value
+    const canvas = bgCanvasRef.value
     if (!canvas) return { x: 0, y: 0 }
     const cw = editorStore.canvasWidth
     const ch = editorStore.canvasHeight
@@ -288,7 +240,7 @@ export function useCanvasEditor(
   }
 
   function applyCursor(cur: string) {
-    const canvas = canvasRef.value
+    const canvas = bgCanvasRef.value
     if (!canvas || cur === lastCursor) return
     lastCursor = cur
     canvas.style.cursor = cur
@@ -344,7 +296,7 @@ export function useCanvasEditor(
 
   function onPointerDown(e: PointerEvent) {
     if (e.button !== 0) return
-    const canvas = canvasRef.value
+    const canvas = bgCanvasRef.value
     if (!canvas) return
     const p = toDesignPoint(e)
 
@@ -391,7 +343,7 @@ export function useCanvasEditor(
   }
 
   function onPointerMove(e: PointerEvent) {
-    const canvas = canvasRef.value
+    const canvas = bgCanvasRef.value
     if (!canvas) return
     const p = toDesignPoint(e)
 
@@ -431,7 +383,7 @@ export function useCanvasEditor(
     if (!drag) return
     drag = null
     applyCursor('default')
-    const canvas = canvasRef.value
+    const canvas = bgCanvasRef.value
     if (canvas?.hasPointerCapture(e.pointerId)) {
       canvas.releasePointerCapture(e.pointerId)
     }
@@ -560,7 +512,7 @@ export function useCanvasEditor(
   /* ================= 生命周期 ================= */
 
   onMounted(() => {
-    const canvas = canvasRef.value
+    const canvas = bgCanvasRef.value
     const wrap = wrapRef.value
     if (!canvas || !wrap) return
 
@@ -597,7 +549,7 @@ export function useCanvasEditor(
   })
 
   onBeforeUnmount(() => {
-    const canvas = canvasRef.value
+    const canvas = bgCanvasRef.value
     const wrap = wrapRef.value
     if (canvas) {
       canvas.removeEventListener('pointerdown', onPointerDown)
