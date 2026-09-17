@@ -1,25 +1,58 @@
+<!--
+  AssetPanel.vue — 左侧「素材面板」
+
+  【用处】
+    提供素材的两条添加路径，是画布内容的来源：
+    1. 图片菜单：上传本地图片 → 进入素材库 → 拖拽到画布（或点击直接放到画布中心）
+    2. 文字菜单：一键添加文字 / 选择文字预设，在画布中间生成文字元素
+
+  【逻辑】
+    - 素材库存在 assets store（src/stores/assets.ts），本组件只负责上传与展示；
+      真正「加到画布」由 editor store 的 addImage / addText 完成。
+    - 拖拽链路：asset-item 的 dragstart 把素材 id 写入自定义 MIME
+      `application/x-canvas-editor-asset`，画布侧 useCanvasEditor.onDrop 读取该 id，
+      再判断落点是不是 frame（是则替换填充图，否则新增图片元素）。
+    - 拖拽之外还支持「点击素材 = 加到画布正中间」，作为快捷方式。
+    - 上传时尽量读出图片原始宽高（getImageSize），保证拖入画布后尺寸比例正确；
+      图片损坏读不到尺寸时降级为 addAsset(name, src) 仅存地址。
+
+  【关系】
+    - 状态：src/stores/assets.ts（素材库）、src/stores/editor.ts（画布元素）
+    - 画布侧接收：src/composables/useCanvasEditor.ts 的 onDrop
+-->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useAssetsStore, type AssetItem } from '@/stores/assets'
 import { useEditorStore } from '@/stores/editor'
 import { fileToDataURL, getImageSize } from '@/utils/image'
 
+/** 素材拖拽使用的自定义 dataTransfer 类型，画布侧按同一常量读取 */
 const DRAG_MIME = 'application/x-canvas-editor-asset'
 
+/** 面板的两个菜单页签 */
 type MenuKey = 'image' | 'text'
 
 const assetsStore = useAssetsStore()
 const editorStore = useEditorStore()
 
+/** 当前激活的菜单页签（图片 / 文字） */
 const active = ref<MenuKey>('image')
+/** 隐藏的 file input，供「图片上传」按钮触发系统选择框 */
 const fileRef = ref<HTMLInputElement | null>(null)
 
 /* ---------- 图片 ---------- */
 
+/** 点击上传区 → 打开系统文件选择框 */
 function triggerUpload() {
   fileRef.value?.click()
 }
 
+/**
+ * 批量把本地图片加入素材库。
+ * 逻辑：逐个文件过滤非图片类型 → 读成 dataURL → 尽量读出原始宽高一并存入，
+ *       单个文件读尺寸失败不影响其它文件；结束后清空 input 值，
+ *       保证「连续上传同一个文件」也能再次触发 change。
+ */
 async function handleFiles(files: FileList | File[]) {
   const list = Array.from(files)
   for (const file of list) {
@@ -35,17 +68,24 @@ async function handleFiles(files: FileList | File[]) {
   if (fileRef.value) fileRef.value.value = ''
 }
 
+/** file input 的 change 回调：有文件则交给 handleFiles 处理 */
 function onFileChange(e: Event) {
   const input = e.target as HTMLInputElement
   if (input.files?.length) void handleFiles(input.files)
 }
 
+/** 拖拽文件到上传区放下：直接走与点击上传相同的处理流程 */
 function onZoneDrop(e: DragEvent) {
   e.preventDefault()
   const files = e.dataTransfer?.files
   if (files?.length) void handleFiles(files)
 }
 
+/**
+ * 素材项开始拖拽：把素材 id 写入自定义 MIME。
+ * 逻辑：只写 id（不写图片数据），画布侧按 id 回查 assets store，
+ *       避免大图 dataURL 被塞进 dataTransfer 造成卡顿。
+ */
 function onAssetDragStart(e: DragEvent, item: AssetItem) {
   if (!e.dataTransfer) return
   e.dataTransfer.setData(DRAG_MIME, item.id)
@@ -54,6 +94,7 @@ function onAssetDragStart(e: DragEvent, item: AssetItem) {
 
 /** 点击素材 → 添加到画布正中间（拖拽之外的另一快捷方式） */
 async function addAssetToCenter(item: AssetItem) {
+  // 老素材可能没记录尺寸，这里按需补读；读不到就让 editor 用兜底尺寸
   let { width, height } = item
   if (!width || !height) {
     try {
@@ -73,6 +114,7 @@ async function addAssetToCenter(item: AssetItem) {
 
 /* ---------- 文字 ---------- */
 
+/** 文字预设项：一键生成带样式的文字，省去逐个调样式 */
 interface TextPreset {
   label: string
   content: string
@@ -88,10 +130,15 @@ const TEXT_PRESETS: TextPreset[] = [
   { label: '强调', content: 'NEW · 限时优惠', fontSize: 30, fontWeight: 700, color: '#f53f3f' },
 ]
 
+/** 添加一段默认样式文字（默认内容与样式由 editor store 决定），位置居中并自动测量尺寸 */
 function addDefaultText() {
   editorStore.addText()
 }
 
+/**
+ * 按预设添加文字。
+ * 逻辑：把预设的字号/字重/颜色透传给 addText，元素名标为「xx文字」便于在图层中识别。
+ */
 function addPreset(p: TextPreset) {
   editorStore.addText({
     content: p.content,
@@ -102,6 +149,7 @@ function addPreset(p: TextPreset) {
   })
 }
 
+/** 画布上已存在的文字数量（文字页签的提示语可用） */
 const textCount = computed(() => editorStore.elements.filter((e) => e.type === 'text').length)
 </script>
 

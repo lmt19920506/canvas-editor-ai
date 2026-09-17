@@ -1,3 +1,25 @@
+<!--
+  App.vue — 应用外壳（根组件）
+
+  【用处】
+    搭建整体布局并承载全局操作：
+    - 顶栏：品牌区 + 「解析 PSD」「下载 JSON」「载入示例」「清空画布」四个动作 + 解析状态提示
+    - 主体：左（素材面板 AssetPanel）/ 中（画布 CanvasArea）/ 右（属性面板 ConfigPanel）三栏
+
+  【逻辑】
+    1. 布局只负责「壳」，编辑能力全在子组件与 store：本组件不直接操作画布元素，
+       除 PSD 导入、示例数据、清空这三处入口外不做其它业务逻辑。
+    2. PSD 导入链路：隐藏的 file input → parsePsdFile() 解析成 page 数组 JSON
+       → editorStore.importFromPsd() 按图层顺序铺到画布（画布尺寸同步切换为 PSD 尺寸）
+       → 结果留存用于「下载 JSON」与顶栏统计提示。
+    3. 解析大文件会阻塞主线程，所以先置 loading 并等一帧再开始，保证按钮的禁用态能先渲染出来。
+    4. 状态提示分为正常态与错误态（psdStatusError），错误态用红色文案，长文本用 title 兜底展示全量信息。
+
+  【关系】
+    - 解析实现：src/utils/psd.ts（parsePsdFile）
+    - 导入动作：src/stores/editor.ts（importFromPsd）
+    - 子组件：components/AssetPanel.vue | CanvasArea.vue | ConfigPanel.vue
+-->
 <script setup lang="ts">
 import { ref } from 'vue'
 import AssetPanel from '@/components/AssetPanel.vue'
@@ -12,19 +34,33 @@ const assetsStore = useAssetsStore()
 
 /* ================= PSD 解析导入 ================= */
 
+/** 隐藏的 file input，点击顶部按钮时由 pickPsd() 触发 */
 const psdInputRef = ref<HTMLInputElement | null>(null)
 /** 是否正在解析 PSD（大文件解析耗时较久，按钮置为加载态） */
 const psdParsing = ref(false)
 /** 最近一次解析结果（用于下载 JSON / 展示统计） */
 const lastPsdResult = ref<PsdParseResult | null>(null)
+/** 顶栏状态提示文案（成功/失败共用同一位置） */
 const psdStatus = ref('')
+/** 状态提示是否为错误态（决定红色样式） */
 const psdStatusError = ref(false)
 
+/** 点击「解析 PSD」：解析中直接忽略，避免重复触发文件选择 */
 function pickPsd() {
   if (psdParsing.value) return
   psdInputRef.value?.click()
 }
 
+/**
+ * 选择文件后解析并导入画布。
+ * 逻辑：
+ *   1. 先清空 input.value，保证连续选择同一个文件也能再次触发 change；
+ *   2. 置 loading 并等一帧，让按钮禁用态先渲染，避免解析阻塞 UI 造成「点了没反应」的错觉；
+ *   3. parsePsdFile 解析为 page 数组 JSON，结果留存供下载；
+ *   4. importFromPsd 交给 store 按 zIndex 铺到画布（画布尺寸切为 PSD 尺寸）；
+ *   5. 无可用图层时用 alert 列出跳过原因，便于设计师自查命名/隐藏图层问题；
+ *   6. 任何异常统一收敛为错误提示，PsdParseError 直接展示其 message。
+ */
 async function onPsdFileChange(e: Event) {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
@@ -66,7 +102,11 @@ async function onPsdFileChange(e: Event) {
   }
 }
 
-/** 下载最近一次解析生成的 JSON（page 数组结构：container + data[文字/图片/填充元素]） */
+/**
+ * 下载最近一次解析生成的 JSON（page 数组结构：container + data[文字/图片/填充元素]）。
+ * 逻辑：只导出 pages（meta 为调试统计，不属于模板数据）；
+ *       用 Blob + 临时 <a> 触发下载，文件名取源文件名（.psd → .psd.json）。
+ */
 function downloadPsdJson() {
   const result = lastPsdResult.value
   if (!result) return
@@ -81,7 +121,11 @@ function downloadPsdJson() {
   URL.revokeObjectURL(url)
 }
 
-/** 一键载入示例：一张图片 + 一段标题文字 */
+/**
+ * 一键载入示例：一张图片 + 一段标题文字。
+ * 逻辑：取素材库第一张图放在画布左侧偏上（按当前画布尺寸取相对位置，兼容 PSD 尺寸），
+ *       再叠加一段标题文字，用于快速验证画布交互。
+ */
 function loadDemo() {
   const first = assetsStore.items[0]
   if (first) {
@@ -100,6 +144,7 @@ function loadDemo() {
   })
 }
 
+/** 清空画布：空画布直接返回，否则二次确认后清空（同时恢复默认画布尺寸） */
 function clearCanvas() {
   if (!editorStore.elements.length) return
   if (window.confirm('确定清空画布上所有元素吗？')) {

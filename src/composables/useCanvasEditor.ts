@@ -1,13 +1,9 @@
 import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
-import {
-  HANDLE_SIZE,
-  MIN_ELEMENT_SIZE,
-  clamp,
-  type ResizeHandle,
-} from '@/config/editor'
+import { MIN_ELEMENT_SIZE, clamp, type ResizeHandle } from '@/config/editor'
 import type { EditorElement } from '@/types/element'
 import { isFrameElement, isTextElement } from '@/types/element'
 import { fileToDataURL, getImageSize } from '@/utils/image'
+import { HANDLE_CURSOR, handleHitRadius, handlePoints } from '@/utils/selection'
 import { useEditorStore } from '@/stores/editor'
 import { useAssetsStore, type AssetItem } from '@/stores/assets'
 
@@ -49,23 +45,16 @@ interface PanFrameDrag {
 
 type DragState = MoveDrag | ResizeDrag | PanFrameDrag
 
-export interface HandlePoint {
-  key: ResizeHandle
-  x: number
-  y: number
-}
-
 /**
  * 画布编辑器核心 hook
- * 职责：canvas 渲染（底图网格 + 顶层选中框）/ 点击选中 / 拖拽移动 / 8 控制点等比缩放 /
+ * 职责：底图网格渲染 / 点击选中 / 拖拽移动 / 8 控制点等比缩放 /
  *       素材拖放接收 / 键盘操作。
- * 元素（image / frame / text）不再由 canvas 绘制，改由 Vue 组件渲染在两层 canvas 之间
- * （见 CanvasArea.vue 与 components/elements/*），本 hook 只负责底图与选中态。
+ * 元素（image / frame / text）与选中框（SelectionOverlay）均由 Vue 组件渲染，
+ * 本 hook 只负责底层画布（白底 + 网格）与全部指针交互。
  */
 export function useCanvasEditor(
   wrapRef: Ref<HTMLElement | null>,
   bgCanvasRef: Ref<HTMLCanvasElement | null>,
-  overlayCanvasRef: Ref<HTMLCanvasElement | null>,
 ) {
   const editorStore = useEditorStore()
   const assetsStore = useAssetsStore()
@@ -80,14 +69,6 @@ export function useCanvasEditor(
 
   /* ================= 渲染 ================= */
 
-  function getBgCtx(): CanvasRenderingContext2D | null {
-    return bgCanvasRef.value?.getContext('2d') ?? null
-  }
-
-  function getOverlayCtx(): CanvasRenderingContext2D | null {
-    return overlayCanvasRef.value?.getContext('2d') ?? null
-  }
-
   function invalidate() {
     if (rafId) return
     rafId = requestAnimationFrame(() => {
@@ -99,14 +80,13 @@ export function useCanvasEditor(
   function render() {
     const bg = bgCanvasRef.value
     const bgCtx = bg?.getContext('2d') ?? null
-    const overlay = overlayCanvasRef.value
-    const overlayCtx = overlay?.getContext('2d') ?? null
-    if (!bg || !bgCtx || !overlay || !overlayCtx) return
+    if (!bg || !bgCtx) return
 
     const cw = editorStore.canvasWidth
     const ch = editorStore.canvasHeight
 
     // 底层画布：白底 + 网格（示意透明底）
+    // 元素与选中框分别由 ElementXxxView / SelectionOverlay 组件渲染在其上层
     bgCtx.clearRect(0, 0, cw, ch)
     bgCtx.fillStyle = '#ffffff'
     bgCtx.fillRect(0, 0, cw, ch)
@@ -122,55 +102,6 @@ export function useCanvasEditor(
       bgCtx.lineTo(cw, y)
     }
     bgCtx.stroke()
-
-    // 顶层画布：仅绘制选中虚线框与控制点（元素由 Vue 组件渲染在两层画布之间）
-    overlayCtx.clearRect(0, 0, cw, ch)
-    const sel = editorStore.selected
-    if (sel && editorStore.elements.includes(sel)) {
-      drawSelection(overlayCtx, sel)
-    }
-  }
-
-  /** 当前选中元素 8 个控制点 */
-  function handlePoints(el: EditorElement): HandlePoint[] {
-    const { x, y, width: w, height: h } = el
-    const cx = x + w / 2
-    const cy = y + h / 2
-    return [
-      { key: 'nw', x, y },
-      { key: 'n', x: cx, y },
-      { key: 'ne', x: x + w, y },
-      { key: 'e', x: x + w, y: cy },
-      { key: 'se', x: x + w, y: y + h },
-      { key: 's', x: cx, y: y + h },
-      { key: 'sw', x, y: y + h },
-      { key: 'w', x, y: cy },
-    ]
-  }
-
-  function drawSelection(ctx: CanvasRenderingContext2D, el: EditorElement) {
-    const { x, y, width: w, height: h } = el
-    const pad = HANDLE_SIZE / 2
-
-    // 选中虚线框
-    ctx.save()
-    ctx.strokeStyle = '#3370ff'
-    ctx.lineWidth = 1
-    ctx.setLineDash([4, 3])
-    ctx.strokeRect(x - pad, y - pad, w + pad * 2, h + pad * 2)
-    ctx.restore()
-
-    // 8 个控制方块
-    const pts = handlePoints(el)
-    ctx.fillStyle = '#ffffff'
-    ctx.strokeStyle = '#3370ff'
-    ctx.lineWidth = 1.5
-    for (const p of pts) {
-      ctx.beginPath()
-      ctx.rect(p.x - pad, p.y - pad, HANDLE_SIZE, HANDLE_SIZE)
-      ctx.fill()
-      ctx.stroke()
-    }
   }
 
   /* ================= 坐标与命中 ================= */
@@ -225,7 +156,7 @@ export function useCanvasEditor(
   }
 
   function handleAt(el: EditorElement, p: { x: number; y: number }): ResizeHandle | null {
-    const pad = HANDLE_SIZE / 2 + 6 // 命中半径略大于控制点视觉尺寸
+    const pad = handleHitRadius() // 命中半径略大于控制点视觉尺寸
     let best: ResizeHandle | null = null
     let bestDist = Infinity
     for (const hp of handlePoints(el)) {
@@ -236,17 +167,6 @@ export function useCanvasEditor(
       }
     }
     return best
-  }
-
-  const HANDLE_CURSOR: Record<ResizeHandle, string> = {
-    nw: 'nwse-resize',
-    n: 'ns-resize',
-    ne: 'nesw-resize',
-    e: 'ew-resize',
-    se: 'nwse-resize',
-    s: 'ns-resize',
-    sw: 'nesw-resize',
-    w: 'ew-resize',
   }
 
   function applyCursor(cur: string) {
@@ -585,17 +505,8 @@ export function useCanvasEditor(
     // 首次渲染
     invalidate()
 
-    // 数据变化后重绘
-    watch(
-      () => editorStore.elements,
-      () => invalidate(),
-      { deep: true },
-    )
-    watch(
-      () => editorStore.selectedId,
-      () => invalidate(),
-    )
-    // 画布尺寸变化（PSD 导入）后重绘
+    // 画布尺寸变化（PSD 导入）后重绘底图网格
+    // 元素与选中框是 Vue 组件渲染，数据变化由响应式自动驱动，无需手动重绘
     watch(
       () => [editorStore.canvasWidth, editorStore.canvasHeight],
       () => invalidate(),

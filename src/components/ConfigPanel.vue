@@ -1,3 +1,24 @@
+<!--
+  ConfigPanel.vue — 右侧「属性配置」面板
+
+  【用处】
+    选中画布元素后，在这里修改它的属性：
+    - 图片 / 填充元素（frame）：名称、尺寸（等比联动）、位置、不透明度、层级、复制删除
+    - 文字：内容、字号、字重、字体、颜色，外加公共的位置 / 不透明度 / 层级操作
+
+  【逻辑】
+    1. 全部为「受控输入」：值的显示来自 store（computed），修改统一走 store 的 action
+       （patchElement / moveElement / bringForward / sendBackward / duplicateElement / removeElement），
+       组件自身不保存任何副本状态，保证画布与面板永远一致。
+    2. 类型收窄：模板用 v-if="img" / v-else-if="txt" 区分两套表单；
+       img 同时涵盖 image 与 frame（frame 复用图片的属性面板，只是徽标文案不同）。
+    3. 尺寸联动：改宽按 aspectRatio 算高、改高算宽，始终保持等比（与画布上的等比缩放一致）。
+    4. 位置输入复用 moveElement，越界钳制逻辑只在 store 里维护一份。
+
+  【关系】
+    - 状态与操作：src/stores/editor.ts
+    - 元素显示：components/elements/*（改完属性画布即时更新）
+-->
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useEditorStore } from '@/stores/editor'
@@ -6,6 +27,8 @@ import type { ElementPatch } from '@/types/element'
 import type { FrameElement, ImageElement, TextElement } from '@/types/element'
 
 const store = useEditorStore()
+
+/** 当前选中元素（store getter；未选中或已删除时为 null） */
 const sel = computed(() => store.selected)
 
 /** 收窄后的图片/填充(frame)/文字元素，模板里用 v-if="img"/"txt" 做类型收窄 */
@@ -16,6 +39,7 @@ const txt = computed<TextElement | null>(() =>
   sel.value?.type === 'text' ? sel.value : null,
 )
 
+/** 可选字体列表（value 为带 fallback 的 font-family 串，直接写回元素字段） */
 const FONT_OPTIONS: Array<{ label: string; value: string }> = [
   { label: '默认（无衬线）', value: DEFAULT_FONT_FAMILY },
   { label: '微软雅黑', value: '"Microsoft YaHei", "微软雅黑", sans-serif' },
@@ -26,19 +50,32 @@ const FONT_OPTIONS: Array<{ label: string; value: string }> = [
   { label: 'Georgia 衬线', value: 'Georgia, "Times New Roman", serif' },
 ]
 
+/** 常用颜色快捷色板（点击即写入文字颜色） */
 const COLOR_SWATCHES = ['#1f2329', '#f53f3f', '#ff9f0a', '#00b42a', '#3370ff', '#722ed1', '#ffffff']
 
+/**
+ * 选中元素在 elements 数组中的下标。
+ * 逻辑：数组顺序即层级（越靠后越上层），所以用下标就能判断能否上移/下移；
+ *       未选中时为 -1。
+ */
 const selectedIndex = computed(() =>
   sel.value ? store.elements.findIndex((e) => e.id === sel.value!.id) : -1,
 )
+/** 能否上移一层：不是最顶层才有意义 */
 const hasPrev = computed(() => selectedIndex.value > 0)
+/** 能否下移一层：不是最底层（且确实有选中）才有意义 */
 const hasNext = computed(() => selectedIndex.value > -1 && selectedIndex.value < store.elements.length - 1)
 
+/**
+ * 统一的部分属性更新入口。
+ * 逻辑：所有表单控件都通过它调用 store.patchElement，避免在模板里散落 store 调用；
+ *       sel 为空时静默忽略（选中被清空后输入框的残留事件）。
+ */
 function patch(p: ElementPatch) {
   if (sel.value) store.patchElement(sel.value.id, p)
 }
 
-/** 位置（复用 moveElement 保证不越界） */
+/** 设置位置：复用 moveElement 保证不越界（钳制逻辑只在 store 里维护一份） */
 function setPos(key: 'x' | 'y', raw: string) {
   const el = sel.value
   if (!el) return
@@ -49,7 +86,7 @@ function setPos(key: 'x' | 'y', raw: string) {
   store.moveElement(el.id, x, y)
 }
 
-/** 图片尺寸：宽/高任一变化都联动另一边，维持等比例 */
+/** 图片 / 填充元素尺寸：宽或高任一变化都按 aspectRatio 联动另一边，维持等比；最小 16px */
 function setImageSize(key: 'width' | 'height', raw: string) {
   const el = img.value
   if (!el) return
@@ -65,6 +102,7 @@ function setImageSize(key: 'width' | 'height', raw: string) {
   }
 }
 
+/** 不透明度滑杆：UI 用 0~100 整数百分比，store 存 0~1 小数，这里做换算 */
 function setOpacity(raw: string) {
   patch({ opacity: Number(raw) / 100 })
 }
